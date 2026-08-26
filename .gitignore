@@ -1,0 +1,21 @@
+# Gitignore settings for ESPHome
+/.esphome/
+/secrets.yaml
+
+# сборочный мусор и артефакты
+__pycache__/
+*.pyc
+
+# образы прошивок содержат вшитые Wi-Fi секреты — не коммитить
+*.bin
+firmware/*.bin
+image_firmware_is.*.bin
+!firmware/.gitkeep
+
+# логи
+*.log
+
+# стейл-снапшот и локальные конфиги
+eltex-cutter.tar
+*.tar
+eltexplug1.yaml

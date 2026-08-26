@@ -1,0 +1,32 @@
+# eltex-cutter в Docker — по образцу tuya-cloudcutter.
+#
+# ВАЖНО про Wi-Fi: подключение к точке устройства (nmcli) работает ТОЛЬКО на
+# Linux-хосте с реальным Wi-Fi-адаптером. Нужны host-сеть и NET_ADMIN, чтобы
+# контейнер видел и переключал Wi-Fi хоста. На Docker Desktop (Windows/macOS)
+# этого нет — там подключайтесь к точке сами, а контейнер запускайте
+# с --skip-provision (или без --ap) для фазы брокер+HTTP+OTA.
+#
+# Примеры запуска — в конце файла и в RUNBOOK.md.
+
+services:
+  eltex-cutter:
+    build: .
+    image: eltex-cutter:latest
+    # host-сеть: и для управления Wi-Fi, и чтобы устройство дошло до брокера/HTTP
+    network_mode: host
+    cap_add:
+      - NET_ADMIN            # nmcli переключает Wi-Fi
+    volumes:
+      - ./firmware:/firmware            # сюда кладите образы image_firmware_is.*.bin
+      - ./profiles:/app/profiles        # профили устройств (правятся без пересборки)
+      # для управления Wi-Fi контейнеру нужен доступ к NetworkManager хоста:
+      - /var/run/dbus:/var/run/dbus
+      - /run/NetworkManager:/run/NetworkManager
+    # аргументы передаются после имени сервиса:
+    #   docker compose run --rm eltex-cutter --scan
+    #   docker compose run --rm eltex-cutter \
+    #       --profile eltex-sw-plg01 --ap ELTEX-SW-PLG01-XXXX --qr /firmware/label.jpg \
+    #       --ssid ДОМ --password ПАРОЛЬ --host-ip 192.168.4.33 \
+    #       --fw /firmware/image_firmware_is.0x00C000.bin --try-variants
+    stdin_open: true
+    tty: true

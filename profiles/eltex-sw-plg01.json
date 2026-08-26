@@ -1,0 +1,83 @@
+{
+  "$schema": "./_schema.md",
+  "name": "eltex-sw-plg01",
+  "display_name": "ELTEX SW-PLG01 (RTL8720CF / AmebaZ2)",
+  "vendor": "Eltex",
+  "status": "verified",
+  "verified_note": "Заводская розетка HW 3v0, прошивка 2.3.0 переведена в ESPHome по воздуху.",
+
+  "ap": {
+    "ssid_glob": "ELTEX-SW-PLG01-*",
+    "ssid_note": "Суффикс = последние 3 байта MAC (0C:EE:20:00:00:00 -> 000000)",
+    "security": "wpa2",
+    "password_source": "qr",
+    "password_note": "Пароль в QR-коде на корпусе, поле P. Это серийный номер В СМЕШАННОМ РЕГИСТРЕ (Fc00000000). Перебор регистров S/N вручную не работает.",
+    "device_ip": "10.24.83.55"
+  },
+
+  "provisioning": {
+    "protocol": "eltex-protobuf-v1",
+    "port": 56684,
+    "magic": "ELTEX_CONFIG 1.0",
+    "framing": "uint32be-length + protobuf",
+    "max_send": 1020,
+    "max_recv": 1024
+  },
+
+  "mqtt": {
+    "plain_port": 1883,
+    "tls_note": "mqtt_broker_url = host:port. Порт 1883 -> tcp:// открытым текстом; любой другой -> ssl:// с проверкой CA Eltex.IoT.",
+    "protocol_versions": [4, 5],
+    "client_id_equals_node_id": true,
+    "keepalive_seen": 20,
+    "cmd_topics": ["sys/cmd/{node_id}"],
+    "extra_subscriptions_seen": [
+      "sys/cmd/redirect",
+      "sys/cmd/{node_id}/redirect",
+      "dev/cmd/{node_id}/#"
+    ],
+    "event_topics": [
+      "sys/event/{node_id}",
+      "sys/event/{node_id}/LWT",
+      "dev/report/{node_id}/0/{iface}"
+    ],
+    "event_note": "sys/event/* — ИСХОДЯЩИЕ топики устройства. Слать туда команды бесполезно."
+  },
+
+  "ota": {
+    "transport": "http",
+    "payloads": [
+      "device_upgrade 0|{url}",
+      "device_upgrade {url}",
+      "device_upgrade |{url}"
+    ],
+    "payload_note": "Первый вариант подтверждён на железе. Устройство отвечает status_resp <node>|1|0 и делает обычный GET.",
+    "success_marker": "http_get"
+  },
+
+  "image": {
+    "family": "realtek-ambz2",
+    "esphome_platform": "rtl87xx",
+    "esphome_board": "generic-rtl8720cf-2mb-992k",
+    "board_note": "992k = 'SDK default' раскладка (ota1 0x00C000, ota2 0x104000, шаг 0xF8000) — совпадает с заводской таблицей разделов, которую OTA НЕ переписывает. 896k = 'Tuya default' (шаг 0xE0000) НЕ подходит для заливки по воздуху.",
+    "artifact_glob": "image_firmware_is.0x*.bin",
+    "artifact_note": "У AmebaZ2 один образ и для ota1, и для ota2. Раздельных *.ota1.bin/*.ota2.bin не бывает.",
+    "slot_size": 1015808,
+    "min_size": 100000,
+    "reject": [
+      { "offset": 0, "hex": "5546320a", "what": "UF2-контейнер (в т.ч. firmware.bin — он тоже UF2!)" },
+      { "offset": 0, "hex": "999996963fcc66fc", "what": "полный образ флеша (таблица разделов AmebaZ2)" }
+    ]
+  },
+
+  "telemetry_ifaces": {
+    "00250000": "состояние реле",
+    "00310100": "RSSI",
+    "00320203": "напряжение x1000 (227628 = 227.6 В)"
+  },
+
+  "recovery": {
+    "note": "Образ пишется во второй слот; при неверном формате загрузчик откатывается на рабочий первый (Invalid FW Image Signature! в UART).",
+    "wired_fallback": "ATOTA=<http url> в AT-консоли по UART (TX/RX/GND, программатор не нужен)"
+  }
+}

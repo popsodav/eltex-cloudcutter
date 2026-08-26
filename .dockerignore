@@ -1,0 +1,7 @@
+.esphome/
+__pycache__/
+*.pyc
+firmware/*.bin
+eltex-cutter.tar
+secrets.yaml
+*.log
