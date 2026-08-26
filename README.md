@@ -1,4 +1,4 @@
-# eltex-cutter
+# eltex-cloudcutter
 
 Заливка своей прошивки (ESPHome и т.п.) в умную розетку ELTEX-SW-PLG01
 (Realtek RTL8720CF / AmebaZ2) по воздуху — без программатора и вскрытия корпуса.
