@@ -4,7 +4,7 @@
   "display_name": "ELTEX SW-PLG01 (RTL8720CF / AmebaZ2)",
   "vendor": "Eltex",
   "status": "verified",
-  "verified_note": "Заводская розетка HW 3v0, прошивка 2.3.0 переведена в ESPHome по воздуху.",
+  "verified_note": "Заводская розетка HW 3v0, прошивка 2.3.0 переведена в ESPHome по воздуху. HW 2v3, прошивка 2.5.0 — тоже (issue #1).",
 
   "ap": {
     "ssid_glob": "ELTEX-SW-PLG01-*",
@@ -30,6 +30,7 @@
     "protocol_versions": [4, 5],
     "client_id_equals_node_id": true,
     "keepalive_seen": 20,
+    "qos_note": "sys/event/* устройство публикует с QoS > 0 и ждёт подтверждения (PUBACK/PUBREC); без него пишет в UART «status not delivered!». На 2.5.0 keepalive 5 с.",
     "cmd_topics": ["sys/cmd/{node_id}"],
     "extra_subscriptions_seen": [
       "sys/cmd/redirect",
@@ -51,7 +52,9 @@
       "device_upgrade {url}",
       "device_upgrade |{url}"
     ],
-    "payload_note": "Первый вариант подтверждён на железе. Устройство отвечает status_resp <node>|1|0 и делает обычный GET.",
+    "payload_note": "Первый вариант подтверждён на железе (2.3.0 и 2.5.0). Устройство делает обычный GET образа.",
+    "status_reply": "status_resp",
+    "status_note": "status_resp <node>|<код>|0 в sys/event/<node_id> — после попытки скачать образ: 1 — скачан, 0 — не вышло. Сам ответ значит, что формат команды принят; варианты без «|» устройство молча игнорирует.",
     "success_marker": "http_get"
   },
 

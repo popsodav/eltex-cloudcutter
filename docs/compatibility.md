@@ -5,7 +5,7 @@
 
 | устройство | чип | платформа | статус | профиль | железо |
 |---|---|---|---|---|---|
-| ELTEX SW-PLG01 | RTL8720CF (AmebaZ2) | rtl87xx / LibreTiny | проверено | [`eltex-sw-plg01`](../profiles/eltex-sw-plg01.json) | [страница](hardware/eltex-sw-plg01.md) |
+| ELTEX SW-PLG01 (HW 3v0 / 2.3.0, HW 2v3 / 2.5.0) | RTL8720CF (AmebaZ2) | rtl87xx / LibreTiny | проверено | [`eltex-sw-plg01`](../profiles/eltex-sw-plg01.json) | [страница](hardware/eltex-sw-plg01.md) |
 
 ## Добавить устройство
 

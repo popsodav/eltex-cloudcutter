@@ -89,6 +89,11 @@ class Profile:
     def payloads(self, url):
         return [p.format(url=url) for p in self.get("ota", "payloads")]
 
+    @property
+    def status_reply(self):
+        """Префикс ответа устройства на OTA (None — устройство не отвечает)."""
+        return self.get("ota", "status_reply")
+
     def rejects(self):
         """[(offset, bytes, описание)] — сигнатуры заведомо негодных файлов."""
         out = []

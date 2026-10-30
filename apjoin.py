@@ -15,14 +15,37 @@ import os
 IS_WINDOWS = platform.system() == "Windows"
 
 
-def _run(cmd, timeout=40):
+def _encodings():
+    """netsh пишет в OEM-кодировке консоли (cp866 у русской Windows), а не в utf-8."""
+    encs = ["utf-8"]
+    if IS_WINDOWS:
+        import ctypes
+        k32 = ctypes.windll.kernel32
+        encs += [f"cp{k32.GetOEMCP()}", f"cp{k32.GetACP()}"]
+    return encs
+
+
+def _decode(b):
+    for enc in _encodings():
+        try:
+            return b.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return b.decode("utf-8", "replace")
+
+
+def _run(cmd, timeout=40, env=None):
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-        return r.returncode, (r.stdout or "") + (r.stderr or "")
+        r = subprocess.run(cmd, capture_output=True, timeout=timeout, env=env)
+        return r.returncode, _decode((r.stdout or b"") + (r.stderr or b""))
     except FileNotFoundError:
         return 127, f"нет команды: {cmd[0]}"
     except subprocess.TimeoutExpired:
         return 124, "таймаут"
+
+
+# nmcli локализован: «successfully activated» ищем в выводе на английском
+_C_LOCALE = {**os.environ, "LC_ALL": "C"}
 
 
 # ---------------- Linux (nmcli) ----------------
@@ -31,13 +54,14 @@ def _nmcli_connect(ssid, password):
     cmd = ["nmcli", "dev", "wifi", "connect", ssid]
     if password:
         cmd += ["password", password]
-    rc, out = _run(cmd, timeout=45)
+    rc, out = _run(cmd, timeout=45, env=_C_LOCALE)
     ok = rc == 0 and "successfully activated" in out.lower()
     return ok, out.strip()
 
 
 def _nmcli_current_ssid():
-    rc, out = _run(["nmcli", "-t", "-f", "ACTIVE,SSID", "dev", "wifi"], timeout=15)
+    rc, out = _run(["nmcli", "-t", "-f", "ACTIVE,SSID", "dev", "wifi"], timeout=15,
+                   env=_C_LOCALE)
     for line in out.splitlines():
         if line.startswith("yes:"):
             return line.split(":", 1)[1]
@@ -82,16 +106,24 @@ def _netsh_connect(ssid, password, settle=14):
             pass
 
 
+# Подписи netsh переведены вместе с Windows: «State : connected» / «Состояние : подключено»
+_NETSH_STATE = ("state", "состояние")
+_NETSH_CONNECTED = ("connected", "подключено")
+
+
 def _netsh_current_ssid():
     rc, out = _run(["netsh", "wlan", "show", "interfaces"], timeout=15)
     state = ssid = None
     for line in out.splitlines():
-        s = line.strip()
-        if s.startswith("State") and ":" in s:
-            state = s.split(":", 1)[1].strip()
-        elif s.startswith("SSID") and not s.startswith("BSSID") and ":" in s:
-            ssid = s.split(":", 1)[1].strip()
-    return ssid if state == "connected" else None
+        key, sep, val = line.partition(":")
+        if not sep:
+            continue
+        key, val = key.strip().lower(), val.strip()
+        if key in _NETSH_STATE:
+            state = val.lower()
+        elif key == "ssid":                   # не BSSID / AP BSSID
+            ssid = val
+    return ssid if state in _NETSH_CONNECTED else None
 
 
 def _netsh_forget(ssid):

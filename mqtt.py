@@ -3,7 +3,13 @@
 Поддерживает MQTT 3.1.1 (protocol level 4) и 5.0 (level 5) — прошивка собрана с
 Paho, в ней есть ветки v5 (onSend5 / MQTTPubPropertedMessage), поэтому нужны обе.
 Реализовано ровно столько, сколько требуется: CONNECT/CONNACK, SUBSCRIBE/SUBACK,
-PUBLISH в обе стороны (QoS 0/1), PINGREQ/PINGRESP, DISCONNECT.
+UNSUBSCRIBE/UNSUBACK, PUBLISH в обе стороны (QoS 0/1/2 с подтверждениями),
+PINGREQ/PINGRESP, DISCONNECT.
+
+ВИДНО ПО ЛОГАМ ЖИВОЙ РОЗЕТКИ (SW-PLG01, прошивка 2.5.0, issue #1): события в
+sys/event/* она публикует с QoS > 0 и ждёт подтверждения. Без него в её UART
+«status not delivered!», а у нас был мусор из packet id перед текстом
+(\\x17\\x02\\x01\\x01bssid …, а id 13 = '\\r' затирал строку в терминале).
 """
 
 import socket
@@ -12,6 +18,7 @@ import threading
 import time
 
 CONNECT, CONNACK, PUBLISH, PUBACK = 1, 2, 3, 4
+PUBREC, PUBREL, PUBCOMP = 5, 6, 7
 SUBSCRIBE, SUBACK, UNSUBSCRIBE, UNSUBACK = 8, 9, 10, 11
 PINGREQ, PINGRESP, DISCONNECT = 12, 13, 14
 
@@ -32,6 +39,11 @@ def _enc_str(s) -> bytes:
     return struct.pack(">H", len(s)) + s
 
 
+def _printable(s: str) -> str:
+    """Управляющие символы — в \\xNN, чтобы '\\r' и пр. не ломали строку лога."""
+    return "".join(c if c.isprintable() else f"\\x{ord(c):02x}" for c in s)
+
+
 class Broker(threading.Thread):
     def __init__(self, host="0.0.0.0", port=1883, log=print):
         super().__init__(daemon=True)
@@ -45,6 +57,8 @@ class Broker(threading.Thread):
         self.connected = threading.Event()
         self.subscribed = threading.Event()
         self._stop = threading.Event()
+        self._send_lock = threading.Lock()   # publish() из главного потока + ack из _serve
+        self._pid = 0
 
     # ---------- жизненный цикл ----------
     def run(self):
@@ -80,15 +94,23 @@ class Broker(threading.Thread):
                 pkt = self._read_packet(conn)
                 if pkt is None:
                     break
-                ptype, payload = pkt
+                ptype, flags, payload = pkt
                 if ptype == CONNECT:
                     self._on_connect(conn, payload)
                 elif ptype == SUBSCRIBE:
                     self._on_subscribe(conn, payload)
+                elif ptype == UNSUBSCRIBE:
+                    self._on_unsubscribe(conn, payload)
                 elif ptype == PUBLISH:
-                    self._on_publish(payload)
+                    self._on_publish(conn, flags, payload)
+                elif ptype == PUBREL:             # QoS 2, шаг 3 -> завершаем PUBCOMP
+                    self._send(conn, bytes([PUBCOMP << 4]), payload[:2])
+                elif ptype == PUBREC:             # QoS 2 на нашу публикацию
+                    self._send(conn, bytes([PUBREL << 4 | 0x02]), payload[:2])
+                elif ptype in (PUBACK, PUBCOMP):  # подтверждения наших публикаций
+                    pass
                 elif ptype == PINGREQ:
-                    conn.sendall(bytes([PINGRESP << 4, 0]))
+                    self._send(conn, bytes([PINGRESP << 4]), b"")
                 elif ptype == DISCONNECT:
                     self.log("[mqtt] клиент отключился (DISCONNECT)")
                     break
@@ -107,7 +129,7 @@ class Broker(threading.Thread):
         hdr = conn.recv(1)
         if not hdr:
             return None
-        ptype = hdr[0] >> 4
+        ptype, flags = hdr[0] >> 4, hdr[0] & 0x0F
         mult, length = 1, 0
         while True:
             b = conn.recv(1)
@@ -123,7 +145,11 @@ class Broker(threading.Thread):
             if not chunk:
                 return None
             body += chunk
-        return ptype, body
+        return ptype, flags, body
+
+    def _send(self, conn, hdr: bytes, body: bytes):
+        with self._send_lock:
+            conn.sendall(hdr + _enc_len(len(body)) + body)
 
     def _on_connect(self, conn, p):
         i = 0
@@ -141,9 +167,9 @@ class Broker(threading.Thread):
         self.log(f"[mqtt] CONNECT: {name} v{level}, clientId='{self.client_id}', "
                  f"keepalive={keepalive}s")
         if level >= 5:
-            conn.sendall(bytes([CONNACK << 4, 3, 0x00, 0x00, 0x00]))
+            self._send(conn, bytes([CONNACK << 4]), b"\x00\x00\x00")
         else:
-            conn.sendall(bytes([CONNACK << 4, 2, 0x00, 0x00]))
+            self._send(conn, bytes([CONNACK << 4]), b"\x00\x00")
         self.client = conn
         self.connected.set()
 
@@ -165,19 +191,48 @@ class Broker(threading.Thread):
         if self.version >= 5:
             body += b"\x00"
         body += bytes(codes)
-        conn.sendall(bytes([SUBACK << 4]) + _enc_len(len(body)) + body)
+        self._send(conn, bytes([SUBACK << 4]), body)
         self.subscribed.set()
 
-    def _on_publish(self, p):
+    def _on_unsubscribe(self, conn, p):
+        i = 0
+        pid = struct.unpack_from(">H", p, i)[0]; i += 2
+        if self.version >= 5:
+            plen, i = self._varint(p, i)
+            i += plen
+        codes = []
+        while i < len(p):
+            tlen = struct.unpack_from(">H", p, i)[0]; i += 2
+            topic = p[i:i + tlen].decode("utf-8", "replace"); i += tlen
+            if topic in self.subscriptions:
+                self.subscriptions.remove(topic)
+            codes.append(0x00)
+            self.log(f"[mqtt] UNSUBSCRIBE: {topic}")
+        body = struct.pack(">H", pid)
+        if self.version >= 5:                 # у 3.1.1 в UNSUBACK только packet id
+            body += b"\x00" + bytes(codes)
+        self._send(conn, bytes([UNSUBACK << 4]), body)
+
+    def _on_publish(self, conn, flags, p):
+        qos = (flags >> 1) & 0x03
         tlen = struct.unpack_from(">H", p, 0)[0]
         topic = p[2:2 + tlen].decode("utf-8", "replace")
-        rest = p[2 + tlen:]
-        if self.version >= 5 and rest:
-            plen, off = self._varint(rest, 0)
-            rest = rest[off + plen:]
-        text = rest.decode("utf-8", "replace")
+        i = 2 + tlen
+        pid = None
+        if qos:                               # у QoS 1/2 после топика идёт packet id
+            pid = p[i:i + 2]; i += 2
+        if self.version >= 5 and i < len(p):
+            plen, i = self._varint(p, i)
+            i += plen
+        text = p[i:].decode("utf-8", "replace")
         self.messages.append((topic, text))
-        self.log(f"[mqtt] <- [{topic}] {text}")
+        self.log(f"[mqtt] <- [{topic}] {_printable(text)}")
+        # Без подтверждения прошивка считает сообщение недоставленным.
+        # Код причины в v5 опускаем: длина 2 = «успех» и для 3.1.1, и для 5.0.
+        if qos == 1:
+            self._send(conn, bytes([PUBACK << 4]), pid)
+        elif qos == 2:
+            self._send(conn, bytes([PUBREC << 4]), pid)
 
     @staticmethod
     def _varint(buf, i):
@@ -195,12 +250,12 @@ class Broker(threading.Thread):
             raise RuntimeError("розетка не подключена к брокеру")
         body = _enc_str(topic)
         if qos:
-            body += struct.pack(">H", 1)
+            self._pid = self._pid % 0xFFFF + 1
+            body += struct.pack(">H", self._pid)
         if self.version >= 5:
             body += b"\x00"                   # пустой набор properties
         body += payload.encode()
-        hdr = (PUBLISH << 4) | (qos << 1)
-        self.client.sendall(bytes([hdr]) + _enc_len(len(body)) + body)
+        self._send(self.client, bytes([(PUBLISH << 4) | (qos << 1)]), body)
         self.log(f"[mqtt] -> [{topic}] {payload}")
 
     def wait_topic(self, substr: str, timeout: float = 120.0):

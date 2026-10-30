@@ -168,31 +168,69 @@ def _find_cmd_topic(broker, node_id, wait, profile=None):
     return None
 
 
-def run_ota(broker, url, node_id, variants, wait, profile=None):
+def _status_reply(broker, since, prefix):
+    """Ответ устройства на OTA среди сообщений с номера since: (код, текст) или None.
+
+    SW-PLG01 шлёт «status_resp <node>|<код>|0» ПОСЛЕ попытки скачать образ:
+    1 — скачан, 0 — не вышло. Сам ответ значит, что формат команды принят.
+    """
+    if not prefix:
+        return None
+    for _topic, text in broker.messages[since:]:
+        if text.startswith(prefix):
+            fields = text[len(prefix):].strip().split("|")
+            return (fields[1] if len(fields) > 1 else ""), text
+    return None
+
+
+def run_ota(broker, url, node_id, variants, wait, profile=None, retries=2):
+    """-> "ok" | "download_failed" (команду принял, образ не скачал) | "no_reaction" | "error"."""
     topic = _find_cmd_topic(broker, node_id, wait, profile)
     if not topic:
         log(f"устройство не подписалось ни на один командный топик: "
             f"{profile.cmd_topics(node_id) if profile else ['sys/cmd/'+node_id]}", "!")
         log(f"подписки, которые видел брокер: {broker.subscriptions or 'нет'}", "!")
-        return False
+        return "error"
     log(f"командный топик устройства: {topic}")
+    prefix = profile.status_reply if profile else None
 
     for i, payload in enumerate(variants, 1):   # варианты приходят уже с подставленным URL
-        log(f"вариант {i}/{len(variants)}: публикую команду OTA")
-        try:
-            broker.publish(topic, payload)
-        except RuntimeError as e:
-            log(f"публикация не удалась: {e}", "!")
-            return False
-        # ждём, не пойдёт ли устройство за образом
-        for _ in range(int(wait / 0.5)):
-            if _http_hit.is_set():
-                log("устройство начало скачивать образ — команда сработала", "+")
-                return True
-            time.sleep(0.5)
+        for attempt in range(1 + retries):
+            if attempt:
+                log(f"повторяю ту же команду (попытка {attempt + 1}/{1 + retries})")
+            else:
+                log(f"вариант {i}/{len(variants)}: публикую команду OTA")
+            since = len(broker.messages)
+            try:
+                broker.publish(topic, payload)
+            except RuntimeError as e:
+                log(f"публикация не удалась: {e}", "!")
+                return "error"
+            # ждём, не пойдёт ли устройство за образом
+            reply = None
+            for _ in range(int(wait / 0.5)):
+                if _http_hit.is_set():
+                    log("устройство начало скачивать образ — команда сработала", "+")
+                    return "ok"
+                reply = _status_reply(broker, since, prefix)
+                if reply:
+                    break
+                time.sleep(0.5)
+            if not reply:
+                break                           # молчит — формат не тот
+            code, text = reply
+            if code == "1":
+                log(f"устройство сообщило, что образ скачан: «{text}»", "+")
+                return "ok"
+            log(f"устройство ответило «{text}»: команду приняло, "
+                f"но скачать образ не смогло", "?")
+            if attempt < retries:
+                time.sleep(5)
+        else:
+            return "download_failed"            # формат верный, другие перебирать незачем
         if len(variants) > 1:
             log("реакции нет, пробую следующий формат команды", "?")
-    return False
+    return "no_reaction"
 
 
 _http_hit = threading.Event()
@@ -363,12 +401,19 @@ def main():
 
     all_variants = prof.payloads(url)
     variants = all_variants if args.try_variants else all_variants[:1]
-    ok = run_ota(broker, url, args.node_id, variants, args.wait, prof)
+    result = run_ota(broker, url, args.node_id, variants, args.wait, prof)
 
-    if ok:
+    if result == "ok":
         log("образ отдан. Розетка пишет его во второй слот и перезагрузится.", "+")
         log("Не выключайте питание, пока она не поднимется заново.", "+")
         time.sleep(20)
+    elif result == "download_failed":
+        log("розетка приняла команду, но образ так и не скачала.", "!")
+        log(f"Откройте {url} с ДРУГОГО устройства в этой же сети (телефона), "
+            f"а не с этого компьютера: брандмауэр должен пропускать входящие "
+            f"на порт {args.http_port}.", "!")
+        log("Если открывается — перезапустите розетку (выключить/включить) "
+            "и повторите с --skip-provision.", "!")
     else:
         log("розетка не пошла за образом.", "!")
         log(f"подписки: {broker.subscriptions}", "!")

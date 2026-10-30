@@ -28,6 +28,7 @@
 | `mqtt.event_topics` | исходящие топики устройства (справочно) |
 | **ota** | |
 | `ota.payloads` | список форматов команды OTA; первый — основной, остальные для `--try-variants` |
+| `ota.status_reply` | префикс ответа устройства на OTA (`status_resp`); формат `<префикс> <node>\|<код>\|…`, код `1` — образ скачан, иное — нет |
 | **image** | |
 | `image.esphome_board` | плата LibreTiny для сборки |
 | `image.artifact_glob` | маска нужного файла образа |
